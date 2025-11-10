@@ -1,0 +1,289 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charSet="utf-8"/>
+    <meta name="viewport" content="width=device-width, initial-scale=1"/>
+    <title>ピッチ維持 再生速度変更アプリ</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        /* スライダーの見た目を微調整 */
+        input[type=range]::-webkit-slider-thumb {
+            -webkit-appearance: none;
+            appearance: none;
+            width: 20px;
+            height: 20px;
+            background: #18181b; /* zinc-900 */
+            border-radius: 50%;
+            cursor: pointer;
+            margin-top: -6px; /* スライダーの中央に配置 */
+        }
+        input[type=range].dark::-webkit-slider-thumb {
+            background: #f4f4f5; /* zinc-100 */
+        }
+        input[type=range]::-moz-range-thumb {
+            width: 20px;
+            height: 20px;
+            background: #18181b; /* zinc-900 */
+            border-radius: 50%;
+            cursor: pointer;
+        }
+        input[type=range].dark::-moz-range-thumb {
+             background: #f4f4f5; /* zinc-100 */
+        }
+    </style>
+</head>
+<body class="bg-background text-foreground dark:bg-zinc-900 dark:text-zinc-100">
+
+    <div class="w-screen h-screen flex flex-col items-center justify-center" style="font-family:'Roboto Mono', monospace">
+        
+        <div class="flex-1"></div>
+        
+        <div class="w-full max-w-[640px] px-6">
+            <div class="flex w-full max-w-2xl flex-col items-center gap-6">
+                
+                <div id="drop-zone" class="relative flex h-40 w-full cursor-pointer flex-col items-center justify-center rounded-xl border-2 border-dashed transition border-zinc-300 hover:border-zinc-400 dark:border-zinc-700 dark:hover:border-zinc-600">
+                    <input type="file" accept="audio/*" class="hidden" id="file-input"/>
+                    <div class="flex items-center gap-2 text-zinc-600 dark:text-zinc-300" id="drop-zone-text">
+                        <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="lucide lucide-upload h-5 w-5" aria-hidden="true">
+                            <path d="M12 3v12"></path>
+                            <path d="m17 8-5-5-5 5"></path>
+                            <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path>
+                        </svg>
+                        <span class="text-sm">ここに音声ファイルをドラッグ＆ドロップ（クリックで選択）</span>
+                    </div>
+                </div>
+
+                <div class="flex items-center justify-center">
+                    <button id="play-button" class="inline-flex items-center justify-center whitespace-nowrap text-sm font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-offset-2 disabled:pointer-events-none disabled:opacity-50 cursor-pointer hover:bg-primary/90 focus-visible:ring-primary focus-visible:ring-offset-neutral-950 px-5 py-2.5 h-12 w-12 rounded-full bg-zinc-900 text-white dark:bg-zinc-100 dark:text-zinc-900" disabled="" aria-label="Play">
+                        <svg id="play-icon" xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="lucide lucide-play h-6 w-6" aria-hidden="true">
+                            <path d="M5 5a2 2 0 0 1 3.008-1.728l11.997 6.998a2 2 0 0 1 .003 3.458l-12 7A2 2 0 0 1 5 19z"></path>
+                        </svg>
+                        <svg id="pause-icon" xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="lucide lucide-pause h-6 w-6 hidden" aria-hidden="true">
+                            <rect x="6" y="4" width="4" height="16"></rect>
+                            <rect x="14" y="4" width="4" height="16"></rect>
+                        </svg>
+                    </button>
+                </div>
+
+            </div>
+        </div>
+        
+        <div class="h-16"></div>
+
+        <div class="flex flex-col gap-2 w-full max-w-2xl px-6">
+            <div class="flex items-center justify-between text-sm text-zinc-600 dark:text-zinc-400">
+                <span>× 0.25</span>
+                <span class="text-lg font-semibold text-zinc-900 dark:text-zinc-100" id="speed-display">× 2.13</span>
+                <span>× 4.0</span>
+            </div>
+            <input id="speed-slider" type="range" min="0.25" max="4" step="0.01" class="h-6 cursor-pointer outline-none border-none focus:accent-primary active:accent-primary w-full dark:bg-zinc-700" value="2.125"/>
+        </div>
+        
+        <div class="flex-1"></div>
+    </div>
+
+    <script>
+        document.addEventListener('DOMContentLoaded', () => {
+            // --- Web Audio APIの初期化 ---
+            let audioContext;
+            let audioBuffer = null; // デコードされた音声データ
+            let sourceNode = null;  // 音声の再生ソース
+            let playbackRate = 2.125; // 現在の再生速度
+            let isPlaying = false;
+            let startTime = 0;      // 再生開始時刻（AudioContextの内部時間）
+            let startOffset = 0;    // 再生開始オフセット（秒）
+
+            // --- DOM要素の取得 ---
+            const dropZone = document.getElementById('drop-zone');
+            const fileInput = document.getElementById('file-input');
+            const dropZoneText = document.getElementById('drop-zone-text');
+            const playButton = document.getElementById('play-button');
+            const playIcon = document.getElementById('play-icon');
+            const pauseIcon = document.getElementById('pause-icon');
+            const speedSlider = document.getElementById('speed-slider');
+            const speedDisplay = document.getElementById('speed-display');
+
+            // --- 
+            // AudioContextの初期化（ユーザー操作をトリガーにする）
+            // ---
+            function initAudioContext() {
+                if (!audioContext) {
+                    try {
+                        audioContext = new (window.AudioContext || window.webkitAudioContext)();
+                    } catch (e) {
+                        alert('Web Audio APIは、このブラウザではサポートされていません。');
+                    }
+                }
+            }
+            
+            // ページ読み込み時または最初のユーザー操作でAudioContextを準備
+            document.body.addEventListener('click', initAudioContext, { once: true });
+            document.body.addEventListener('drop', initAudioContext, { once: true });
+
+            // --- 
+            // 1. ファイル処理 (ドラッグ＆ドロップ / クリック)
+            // ---
+            dropZone.addEventListener('click', () => fileInput.click());
+            fileInput.addEventListener('change', (e) => handleFile(e.target.files[0]));
+
+            dropZone.addEventListener('dragover', (e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                dropZone.classList.add('border-blue-500', 'dark:border-blue-400');
+            });
+            dropZone.addEventListener('dragleave', (e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                dropZone.classList.remove('border-blue-500', 'dark:border-blue-400');
+            });
+            dropZone.addEventListener('drop', (e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                dropZone.classList.remove('border-blue-500', 'dark:border-blue-400');
+                if (e.dataTransfer.files && e.dataTransfer.files[0]) {
+                    handleFile(e.dataTransfer.files[0]);
+                }
+            });
+
+            function handleFile(file) {
+                if (!file || !file.type.startsWith('audio/')) {
+                    alert('音声ファイルを選択してください。');
+                    return;
+                }
+                
+                // 既存の再生を停止
+                if (isPlaying) {
+                    stopPlayback();
+                }
+                startOffset = 0; // オフセットをリセット
+
+                dropZoneText.textContent = `読み込み中: ${file.name}`;
+                
+                const reader = new FileReader();
+                reader.onload = (e) => {
+                    // ArrayBufferとして読み込んだデータをデコード
+                    audioContext.decodeAudioData(e.target.result, 
+                        (buffer) => {
+                            audioBuffer = buffer; // デコードしたデータを保存
+                            playButton.disabled = false;
+                            dropZoneText.textContent = `読み込み完了: ${file.name}`;
+                        },
+                        (error) => {
+                            alert('音声ファイルのデコードに失敗しました。');
+                            dropZoneText.textContent = 'ここに音声ファイルをドラッグ＆ドロップ（クリックで選択）';
+                        }
+                    );
+                };
+                reader.readAsArrayBuffer(file);
+            }
+
+            // --- 
+            // 2. 再生 / 一時停止 処理
+            // ---
+            playButton.addEventListener('click', togglePlayPause);
+
+            function togglePlayPause() {
+                if (!audioBuffer) return;
+
+                // AudioContextがユーザー操作待ちの場合、再開させる
+                if (audioContext.state === 'suspended') {
+                    audioContext.resume();
+                }
+
+                if (isPlaying) {
+                    // --- 一時停止処理 ---
+                    stopPlayback(true); // true = 一時停止（オフセット保存）
+                } else {
+                    // --- 再生処理 ---
+                    startPlayback();
+                }
+            }
+
+            function startPlayback() {
+                if (!audioBuffer) return;
+
+                sourceNode = audioContext.createBufferSource();
+                sourceNode.buffer = audioBuffer;
+                
+                // ★★★ マスト要件：ピッチ（音程）を変えずに再生速度を変更 ★★★
+                sourceNode.playbackRate.value = playbackRate; 
+                // ★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★
+
+                sourceNode.connect(audioContext.destination);
+                
+                // 再生終了時の処理
+                sourceNode.onended = () => {
+                    if (isPlaying) { // 正常終了した場合のみ
+                        stopPlayback(false); // false = 完全停止（オフセットリセット）
+                    }
+                };
+                
+                // 再生開始
+                // (開始時間, 開始オフセット[秒])
+                sourceNode.start(0, startOffset % audioBuffer.duration);
+                
+                startTime = audioContext.currentTime; // 再生開始時刻を記録
+                isPlaying = true;
+                updatePlayButtonUI(true); // UIを「一時停止」に
+            }
+
+            function stopPlayback(isPause = false) {
+                if (sourceNode) {
+                    sourceNode.onended = null; // onendedイベントを無効化
+                    sourceNode.stop();
+                    sourceNode.disconnect();
+                    sourceNode = null;
+                }
+                
+                if (isPause) {
+                    // 一時停止の場合：現在の再生位置を計算して保存
+                    // (現在の時刻 - 再生開始時刻) * 再生速度 + 前回のオフセット
+                    const elapsedTime = (audioContext.currentTime - startTime) * playbackRate;
+                    startOffset += elapsedTime;
+                } else {
+                    // 完全停止（再生終了）の場合：オフセットをリセット
+                    startOffset = 0;
+                }
+
+                isPlaying = false;
+                updatePlayButtonUI(false); // UIを「再生」に
+            }
+
+            function updatePlayButtonUI(playing) {
+                if (playing) {
+                    playIcon.classList.add('hidden');
+                    pauseIcon.classList.remove('hidden');
+                    playButton.setAttribute('aria-label', 'Pause');
+                } else {
+                    playIcon.classList.remove('hidden');
+                    pauseIcon.classList.add('hidden');
+                    playButton.setAttribute('aria-label', 'Play');
+                }
+            }
+
+            // --- 
+            // 3. 速度変更スライダー
+            // ---
+            speedSlider.addEventListener('input', (e) => {
+                playbackRate = parseFloat(e.target.value);
+                speedDisplay.textContent = `× ${playbackRate.toFixed(2)}`;
+                
+                // ★ 再生中にも速度をリアルタイムで反映
+                if (isPlaying && sourceNode) {
+                    sourceNode.playbackRate.value = playbackRate;
+                    
+                    // 速度変更に対応するため、オフセット計算の基準時刻をリセット
+                    const elapsedTime = (audioContext.currentTime - startTime) * (sourceNode.playbackRate.value / playbackRate); // 旧速度での経過時間
+                    startOffset += elapsedTime;
+                    startTime = audioContext.currentTime;
+                }
+            });
+
+            // 初期値の反映
+            speedSlider.value = playbackRate;
+            speedDisplay.textContent = `× ${playbackRate.toFixed(2)}`;
+        });
+    </script>
+
+</body>
+</html>
