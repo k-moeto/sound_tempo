@@ -336,11 +336,22 @@
 
             async function analyzeBpm(audioBuffer) {
                 try {
-                    const tempo = await window.analyzeAudio(audioBuffer);
+                    // To speed up analysis, only use a 30-second chunk from 25% into the track
+                    const duration = Math.min(30, audioBuffer.duration * 0.5);
+                    const offset = audioBuffer.duration * 0.25;
+
+                    const tempo = await window.analyzeAudio(audioBuffer, { duration, offset });
                     return tempo;
                 } catch (err) {
                     console.error('BPM analysis failed:', err);
-                    return null;
+                    // Fallback to analyzing the whole buffer if the chunk fails
+                    try {
+                        const tempo = await window.analyzeAudio(audioBuffer);
+                        return tempo;
+                    } catch (innerErr) {
+                        console.error('Full BPM analysis also failed:', innerErr);
+                        return null;
+                    }
                 }
             }
 
