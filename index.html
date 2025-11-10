@@ -340,10 +340,27 @@
                     const duration = Math.min(30, audioBuffer.duration * 0.5);
                     const offset = audioBuffer.duration * 0.25;
 
-                    const tempo = await window.analyzeAudio(audioBuffer, { duration, offset });
+                    const startSample = Math.floor(offset * audioBuffer.sampleRate);
+                    const endSample = Math.floor((offset + duration) * audioBuffer.sampleRate);
+                    const frameCount = endSample - startSample;
+
+                    // Create a new, smaller AudioBuffer containing only the segment we want to analyze
+                    const newAudioBuffer = audioContext.createBuffer(
+                        audioBuffer.numberOfChannels,
+                        frameCount,
+                        audioBuffer.sampleRate
+                    );
+
+                    for (let i = 0; i < audioBuffer.numberOfChannels; i++) {
+                        const channelData = audioBuffer.getChannelData(i);
+                        const chunkData = channelData.subarray(startSample, endSample);
+                        newAudioBuffer.copyToChannel(chunkData, i);
+                    }
+
+                    const tempo = await window.analyzeAudio(newAudioBuffer);
                     return tempo;
                 } catch (err) {
-                    console.error('BPM analysis failed:', err);
+                    console.error('BPM analysis on audio chunk failed:', err);
                     // Fallback to analyzing the whole buffer if the chunk fails
                     try {
                         const tempo = await window.analyzeAudio(audioBuffer);
