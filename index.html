@@ -5,6 +5,10 @@
     <meta name="viewport" content="width=device-width, initial-scale=1"/>
     <title>ピッチ維持 再生速度変更アプリ</title>
     <script src="https://cdn.tailwindcss.com"></script>
+    <script type="module">
+        import { analyze } from 'https://cdn.jsdelivr.net/npm/web-audio-beat-detector@7.0.2/build/esm/index.js';
+        window.analyzeAudio = analyze;
+    </script>
     <style>
         /* スライダーの見た目を微調整 */
         input[type=range]::-webkit-slider-thumb {
@@ -70,13 +74,30 @@
         
         <div class="h-16"></div>
 
-        <div class="flex flex-col gap-2 w-full max-w-2xl px-6">
-            <div class="flex items-center justify-between text-sm text-zinc-600 dark:text-zinc-400">
-                <span>× 0.25</span>
-                <span class="text-lg font-semibold text-zinc-900 dark:text-zinc-100" id="speed-display">× 2.13</span>
-                <span>× 4.0</span>
+        <div class="flex flex-col gap-4 w-full max-w-2xl px-6">
+            <!-- BPM Display -->
+            <div class="text-center">
+                <span id="bpm-display" class="text-2xl font-bold text-zinc-900 dark:text-zinc-100">BPM: --</span>
             </div>
-            <input id="speed-slider" type="range" min="0.25" max="4" step="0.01" class="h-6 cursor-pointer outline-none border-none focus:accent-primary active:accent-primary w-full dark:bg-zinc-700" value="2.125"/>
+
+            <!-- Seek Bar -->
+            <div class="w-full">
+                <input id="seek-slider" type="range" min="0" max="100" step="0.1" value="0" class="w-full h-2 bg-zinc-200 rounded-lg appearance-none cursor-pointer dark:bg-zinc-700" disabled>
+                <div class="flex justify-between text-xs text-zinc-500 dark:text-zinc-400 mt-1">
+                    <span id="current-time">0:00</span>
+                    <span id="duration">0:00</span>
+                </div>
+            </div>
+
+            <!-- Speed Control -->
+            <div class="flex flex-col gap-2 w-full">
+                <div class="flex items-center justify-between text-sm text-zinc-600 dark:text-zinc-400">
+                    <span>× 0.25</span>
+                    <span class="text-lg font-semibold text-zinc-900 dark:text-zinc-100" id="speed-display">× 2.13</span>
+                    <span>× 4.0</span>
+                </div>
+                <input id="speed-slider" type="range" min="0.25" max="4" step="0.01" class="h-6 cursor-pointer outline-none border-none focus:accent-primary active:accent-primary w-full dark:bg-zinc-700" value="2.125"/>
+            </div>
         </div>
         
         <div class="flex-1"></div>
@@ -92,6 +113,8 @@
             let isPlaying = false;
             let startTime = 0;      // 再生開始時刻（AudioContextの内部時間）
             let startOffset = 0;    // 再生開始オフセット（秒）
+            let animationFrameId = null;
+            let detectedBpm = null;
 
             // --- DOM要素の取得 ---
             const dropZone = document.getElementById('drop-zone');
@@ -102,6 +125,10 @@
             const pauseIcon = document.getElementById('pause-icon');
             const speedSlider = document.getElementById('speed-slider');
             const speedDisplay = document.getElementById('speed-display');
+            const seekSlider = document.getElementById('seek-slider');
+            const currentTimeDisplay = document.getElementById('current-time');
+            const durationDisplay = document.getElementById('duration');
+            const bpmDisplay = document.getElementById('bpm-display');
 
             // --- 
             // AudioContextの初期化（ユーザー操作をトリガーにする）
@@ -164,9 +191,20 @@
                     // ArrayBufferとして読み込んだデータをデコード
                     audioContext.decodeAudioData(e.target.result, 
                         (buffer) => {
-                            audioBuffer = buffer; // デコードしたデータを保存
+                            audioBuffer = buffer;
                             playButton.disabled = false;
+                            seekSlider.disabled = false;
                             dropZoneText.textContent = `読み込み完了: ${file.name}`;
+                            durationDisplay.textContent = formatTime(buffer.duration);
+                            seekSlider.max = buffer.duration;
+
+                            // BPMを分析・表示
+                            analyzeBpm(buffer).then(bpm => {
+                                if (bpm) {
+                                    detectedBpm = bpm;
+                                    updateBpmDisplay();
+                                }
+                            });
                         },
                         (error) => {
                             alert('音声ファイルのデコードに失敗しました。');
@@ -222,12 +260,17 @@
                 // (開始時間, 開始オフセット[秒])
                 sourceNode.start(0, startOffset % audioBuffer.duration);
                 
-                startTime = audioContext.currentTime; // 再生開始時刻を記録
+                startTime = audioContext.currentTime;
                 isPlaying = true;
-                updatePlayButtonUI(true); // UIを「一時停止」に
+                updatePlayButtonUI(true);
+                updateSeeker(); // Start the seeker update loop
             }
 
             function stopPlayback(isPause = false) {
+                if (animationFrameId) {
+                    cancelAnimationFrame(animationFrameId);
+                    animationFrameId = null;
+                }
                 if (sourceNode) {
                     sourceNode.onended = null; // onendedイベントを無効化
                     sourceNode.stop();
@@ -267,17 +310,75 @@
             speedSlider.addEventListener('input', (e) => {
                 playbackRate = parseFloat(e.target.value);
                 speedDisplay.textContent = `× ${playbackRate.toFixed(2)}`;
+                updateBpmDisplay();
                 
-                // ★ 再生中にも速度をリアルタイムで反映
                 if (isPlaying && sourceNode) {
-                    sourceNode.playbackRate.value = playbackRate;
-                    
-                    // 速度変更に対応するため、オフセット計算の基準時刻をリセット
-                    const elapsedTime = (audioContext.currentTime - startTime) * (sourceNode.playbackRate.value / playbackRate); // 旧速度での経過時間
+                    // To keep the playback smooth, we adjust the start time
+                    const previousPlaybackRate = sourceNode.playbackRate.value;
+                    const elapsedTime = (audioContext.currentTime - startTime) * previousPlaybackRate;
                     startOffset += elapsedTime;
-                    startTime = audioContext.currentTime;
+                    startTime = audioContext.currentTime; // Reset startTime for new rate
+                    sourceNode.playbackRate.value = playbackRate;
                 }
             });
+
+            // ---
+            // 4. BPM Analysis
+            // ---
+            function updateBpmDisplay() {
+                if (detectedBpm) {
+                    const currentBpm = detectedBpm * playbackRate;
+                    bpmDisplay.textContent = `BPM: ${currentBpm.toFixed(1)}`;
+                } else {
+                    bpmDisplay.textContent = 'BPM: --';
+                }
+            }
+
+            async function analyzeBpm(audioBuffer) {
+                try {
+                    const tempo = await window.analyzeAudio(audioBuffer);
+                    return tempo;
+                } catch (err) {
+                    console.error('BPM analysis failed:', err);
+                    return null;
+                }
+            }
+
+            // ---
+            // 5. Seek Bar Logic
+            // ---
+            seekSlider.addEventListener('input', (e) => {
+                const newTime = parseFloat(e.target.value);
+                startOffset = newTime;
+                currentTimeDisplay.textContent = formatTime(newTime);
+                if (isPlaying) {
+                    stopPlayback(true);
+                    startPlayback();
+                }
+            });
+
+            function updateSeeker() {
+                if (isPlaying && audioBuffer) {
+                    const elapsedTime = (audioContext.currentTime - startTime) * playbackRate;
+                    const currentPlaybackTime = startOffset + elapsedTime;
+
+                    if (currentPlaybackTime < audioBuffer.duration) {
+                        seekSlider.value = currentPlaybackTime;
+                        currentTimeDisplay.textContent = formatTime(currentPlaybackTime);
+                    } else {
+                        // When playback finishes, reset slider and time
+                        seekSlider.value = 0;
+                        currentTimeDisplay.textContent = formatTime(0);
+                    }
+                }
+                animationFrameId = requestAnimationFrame(updateSeeker);
+            }
+
+            function formatTime(seconds) {
+                const minutes = Math.floor(seconds / 60);
+                const secs = Math.floor(seconds % 60);
+                return `${minutes}:${secs.toString().padStart(2, '0')}`;
+            }
 
             // 初期値の反映
             speedSlider.value = playbackRate;
