@@ -42,7 +42,7 @@
             <div class="flex w-full max-w-2xl flex-col items-center gap-6">
                 
                 <div id="drop-zone" class="relative flex h-40 w-full cursor-pointer flex-col items-center justify-center rounded-xl border-2 border-dashed transition border-zinc-300 hover:border-zinc-400 dark:border-zinc-700 dark:hover:border-zinc-600">
-                    <input type="file" accept="audio/*" class="hidden" id="file-input"/>
+                    <input type="file" accept="audio/*,.wav,.mp3,.ogg,.m4a,.aac,.flac" class="hidden" id="file-input"/>
                     <div class="flex items-center gap-2 text-zinc-600 dark:text-zinc-300" id="drop-zone-text">
                         <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="lucide lucide-upload h-5 w-5" aria-hidden="true">
                             <path d="M12 3v12"></path>
@@ -143,7 +143,13 @@
             });
 
             function handleFile(file) {
-                if (!file || !file.type.startsWith('audio/')) {
+                // ファイルバリデーションの緩和
+                // file.typeがaudio/系であるか、または拡張子が一般的な音声ファイルであることを確認
+                const validExtensions = ['.wav', '.mp3', '.ogg', '.m4a', '.aac', '.flac'];
+                const isAudioType = file.type.startsWith('audio/');
+                const isAudioExtension = validExtensions.some(ext => file.name.toLowerCase().endsWith(ext));
+
+                if (!file || (!isAudioType && !isAudioExtension)) {
                     alert('音声ファイルを選択してください。');
                     return;
                 }
@@ -151,36 +157,82 @@
                 // 既存のURLを解放
                 if (audioPlayer.src) {
                     URL.revokeObjectURL(audioPlayer.src);
+                    audioPlayer.src = "";
                 }
 
-                dropZoneText.textContent = `読み込み完了: ${file.name}`;
-                
+                // UIのリセット
+                dropZoneText.textContent = `読み込み中: ${file.name}`;
+                playButton.disabled = true;
+                seekSlider.disabled = true;
+
                 const objectUrl = URL.createObjectURL(file);
                 audioPlayer.src = objectUrl;
-
-                // メタデータ読み込み完了時にUIを更新
-                audioPlayer.onloadedmetadata = () => {
-                    playButton.disabled = false;
-                    seekSlider.disabled = false;
-                    seekSlider.max = audioPlayer.duration;
-                    durationDisplay.textContent = formatTime(audioPlayer.duration);
-
-                    // 設定済みの再生速度を適用
-                    audioPlayer.playbackRate = currentPlaybackRate;
-                    // ピッチ維持を有効化 (多くのブラウザでデフォルトtrueだが念のため)
-                    if (audioPlayer.preservesPitch !== undefined) {
-                        audioPlayer.preservesPitch = true;
-                    } else if (audioPlayer.mozPreservesPitch !== undefined) {
-                        audioPlayer.mozPreservesPitch = true;
-                    } else if (audioPlayer.webkitPreservesPitch !== undefined) {
-                        audioPlayer.webkitPreservesPitch = true;
-                    }
-                };
 
                 audioPlayer.load();
             }
 
-            // --- 
+            // --- オーディオイベントリスナー ---
+
+            // メタデータ読み込み完了時にUIを更新
+            audioPlayer.onloadedmetadata = () => {
+                // ファイル名を取得するために、file-inputまたはdropイベントのスコープにあるfileが必要だが、
+                // ここでは非同期イベントなので、今のテキスト内容からファイル名だけ抽出するか、
+                // あるいはグローバル変数にファイル名を保存する必要がある。
+                // 簡易的に、現在のテキストが「読み込み中: filename」となっていることを利用して置換する、
+                // または handleFile で保存した変数を使う。
+
+                // シンプルに「読み込み完了」とするか、ファイル名を保持するか。
+                // UXとしてはファイル名があったほうがいい。
+                // しかし、handleFileのスコープ外。
+                // audioPlayer.src は blob:URL なのでファイル名はわからない。
+
+                // 暫定対応: もしdropZoneTextにファイル名が含まれていればそれを維持する
+                const currentText = dropZoneText.textContent;
+                const match = currentText.match(/読み込み中: (.+)/);
+                if (match) {
+                    dropZoneText.textContent = `読み込み完了: ${match[1]}`;
+                } else {
+                    dropZoneText.textContent = `読み込み完了`;
+                }
+
+                playButton.disabled = false;
+                seekSlider.disabled = false;
+                seekSlider.max = audioPlayer.duration;
+                durationDisplay.textContent = formatTime(audioPlayer.duration);
+
+                // 設定済みの再生速度を適用
+                audioPlayer.playbackRate = currentPlaybackRate;
+                // ピッチ維持を有効化
+                if (audioPlayer.preservesPitch !== undefined) {
+                    audioPlayer.preservesPitch = true;
+                } else if (audioPlayer.mozPreservesPitch !== undefined) {
+                    audioPlayer.mozPreservesPitch = true;
+                } else if (audioPlayer.webkitPreservesPitch !== undefined) {
+                    audioPlayer.webkitPreservesPitch = true;
+                }
+            };
+
+            // エラーハンドリング
+            audioPlayer.onerror = (e) => {
+                console.error("Audio Load Error:", e);
+                const error = audioPlayer.error;
+                let msg = "読み込みエラー";
+                if (error) {
+                    if (error.code === 1) msg = "中断されました";
+                    else if (error.code === 2) msg = "ネットワークエラー";
+                    else if (error.code === 3) msg = "デコードエラー";
+                    else if (error.code === 4) msg = "非対応の形式です";
+                }
+
+                dropZoneText.textContent = `エラー: ${msg}`;
+                alert(`音声ファイルの読み込みに失敗しました: ${msg} (Code: ${error ? error.code : 'unknown'})`);
+
+                // クリーンアップ
+                playButton.disabled = true;
+                seekSlider.disabled = true;
+            };
+
+            // ---
             // 2. 再生 / 一時停止 処理
             // ---
             playButton.addEventListener('click', togglePlayPause);
@@ -189,14 +241,13 @@
                 if (audioPlayer.paused) {
                     audioPlayer.play().catch(e => {
                         console.error('再生エラー:', e);
-                        alert('再生できませんでした。');
+                        alert(`再生できませんでした: ${e.message}`);
                     });
                 } else {
                     audioPlayer.pause();
                 }
             }
 
-            // オーディオイベントリスナー
             audioPlayer.addEventListener('play', () => updatePlayButtonUI(true));
             audioPlayer.addEventListener('pause', () => updatePlayButtonUI(false));
             audioPlayer.addEventListener('ended', () => {
@@ -224,7 +275,8 @@
                 currentPlaybackRate = parseFloat(e.target.value);
                 speedDisplay.textContent = `× ${currentPlaybackRate.toFixed(2)}`;
                 
-                if (audioPlayer.src) {
+                // srcが設定されている場合のみ適用（エラー回避）
+                if (audioPlayer.currentSrc) {
                     audioPlayer.playbackRate = currentPlaybackRate;
                 }
             });
@@ -235,7 +287,7 @@
             seekSlider.addEventListener('input', (e) => {
                 const newTime = parseFloat(e.target.value);
                 currentTimeDisplay.textContent = formatTime(newTime);
-                if (audioPlayer.src) {
+                if (audioPlayer.currentSrc) {
                     audioPlayer.currentTime = newTime;
                 }
             });
