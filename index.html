@@ -5,10 +5,6 @@
     <meta name="viewport" content="width=device-width, initial-scale=1"/>
     <title>ピッチ維持 再生速度変更アプリ</title>
     <script src="https://cdn.tailwindcss.com"></script>
-    <script type="module">
-        import { analyze } from 'https://cdn.jsdelivr.net/npm/web-audio-beat-detector@7.0.2/build/esm/index.js';
-        window.analyzeAudio = analyze;
-    </script>
     <style>
         /* スライダーの見た目を微調整 */
         input[type=range]::-webkit-slider-thumb {
@@ -75,11 +71,6 @@
         <div class="h-16"></div>
 
         <div class="flex flex-col gap-4 w-full max-w-2xl px-6">
-            <!-- BPM Display -->
-            <div class="text-center">
-                <span id="bpm-display" class="text-2xl font-bold text-zinc-900 dark:text-zinc-100">BPM: --</span>
-            </div>
-
             <!-- Seek Bar -->
             <div class="w-full">
                 <input id="seek-slider" type="range" min="0" max="100" step="0.1" value="0" class="w-full h-2 bg-zinc-200 rounded-lg appearance-none cursor-pointer dark:bg-zinc-700" disabled>
@@ -101,21 +92,13 @@
         </div>
         
         <div class="flex-1"></div>
+
+        <!-- Audio Element (hidden) -->
+        <audio id="audio-player" class="hidden"></audio>
     </div>
 
     <script>
         document.addEventListener('DOMContentLoaded', () => {
-            // --- Web Audio APIの初期化 ---
-            let audioContext;
-            let audioBuffer = null; // デコードされた音声データ
-            let sourceNode = null;  // 音声の再生ソース
-            let playbackRate = 2.125; // 現在の再生速度
-            let isPlaying = false;
-            let startTime = 0;      // 再生開始時刻（AudioContextの内部時間）
-            let startOffset = 0;    // 再生開始オフセット（秒）
-            let animationFrameId = null;
-            let detectedBpm = null;
-
             // --- DOM要素の取得 ---
             const dropZone = document.getElementById('drop-zone');
             const fileInput = document.getElementById('file-input');
@@ -128,25 +111,12 @@
             const seekSlider = document.getElementById('seek-slider');
             const currentTimeDisplay = document.getElementById('current-time');
             const durationDisplay = document.getElementById('duration');
-            const bpmDisplay = document.getElementById('bpm-display');
+            const audioPlayer = document.getElementById('audio-player');
 
-            // --- 
-            // AudioContextの初期化（ユーザー操作をトリガーにする）
-            // ---
-            function initAudioContext() {
-                if (!audioContext) {
-                    try {
-                        audioContext = new (window.AudioContext || window.webkitAudioContext)();
-                    } catch (e) {
-                        alert('Web Audio APIは、このブラウザではサポートされていません。');
-                    }
-                }
-            }
+            // --- 状態変数 ---
+            // 初期再生速度
+            let currentPlaybackRate = 2.125;
             
-            // ページ読み込み時または最初のユーザー操作でAudioContextを準備
-            document.body.addEventListener('click', initAudioContext, { once: true });
-            document.body.addEventListener('drop', initAudioContext, { once: true });
-
             // --- 
             // 1. ファイル処理 (ドラッグ＆ドロップ / クリック)
             // ---
@@ -177,42 +147,37 @@
                     alert('音声ファイルを選択してください。');
                     return;
                 }
-                
-                // 既存の再生を停止
-                if (isPlaying) {
-                    stopPlayback();
+
+                // 既存のURLを解放
+                if (audioPlayer.src) {
+                    URL.revokeObjectURL(audioPlayer.src);
                 }
-                startOffset = 0; // オフセットをリセット
 
-                dropZoneText.textContent = `読み込み中: ${file.name}`;
+                dropZoneText.textContent = `読み込み完了: ${file.name}`;
                 
-                const reader = new FileReader();
-                reader.onload = (e) => {
-                    // ArrayBufferとして読み込んだデータをデコード
-                    audioContext.decodeAudioData(e.target.result, 
-                        (buffer) => {
-                            audioBuffer = buffer;
-                            playButton.disabled = false;
-                            seekSlider.disabled = false;
-                            dropZoneText.textContent = `読み込み完了: ${file.name}`;
-                            durationDisplay.textContent = formatTime(buffer.duration);
-                            seekSlider.max = buffer.duration;
+                const objectUrl = URL.createObjectURL(file);
+                audioPlayer.src = objectUrl;
 
-                            // BPMを分析・表示
-                            analyzeBpm(buffer).then(bpm => {
-                                if (bpm) {
-                                    detectedBpm = bpm;
-                                    updateBpmDisplay();
-                                }
-                            });
-                        },
-                        (error) => {
-                            alert('音声ファイルのデコードに失敗しました。');
-                            dropZoneText.textContent = 'ここに音声ファイルをドラッグ＆ドロップ（クリックで選択）';
-                        }
-                    );
+                // メタデータ読み込み完了時にUIを更新
+                audioPlayer.onloadedmetadata = () => {
+                    playButton.disabled = false;
+                    seekSlider.disabled = false;
+                    seekSlider.max = audioPlayer.duration;
+                    durationDisplay.textContent = formatTime(audioPlayer.duration);
+
+                    // 設定済みの再生速度を適用
+                    audioPlayer.playbackRate = currentPlaybackRate;
+                    // ピッチ維持を有効化 (多くのブラウザでデフォルトtrueだが念のため)
+                    if (audioPlayer.preservesPitch !== undefined) {
+                        audioPlayer.preservesPitch = true;
+                    } else if (audioPlayer.mozPreservesPitch !== undefined) {
+                        audioPlayer.mozPreservesPitch = true;
+                    } else if (audioPlayer.webkitPreservesPitch !== undefined) {
+                        audioPlayer.webkitPreservesPitch = true;
+                    }
                 };
-                reader.readAsArrayBuffer(file);
+
+                audioPlayer.load();
             }
 
             // --- 
@@ -221,76 +186,24 @@
             playButton.addEventListener('click', togglePlayPause);
 
             function togglePlayPause() {
-                if (!audioBuffer) return;
-
-                // AudioContextがユーザー操作待ちの場合、再開させる
-                if (audioContext.state === 'suspended') {
-                    audioContext.resume();
-                }
-
-                if (isPlaying) {
-                    // --- 一時停止処理 ---
-                    stopPlayback(true); // true = 一時停止（オフセット保存）
+                if (audioPlayer.paused) {
+                    audioPlayer.play().catch(e => {
+                        console.error('再生エラー:', e);
+                        alert('再生できませんでした。');
+                    });
                 } else {
-                    // --- 再生処理 ---
-                    startPlayback();
+                    audioPlayer.pause();
                 }
             }
 
-            function startPlayback() {
-                if (!audioBuffer) return;
-
-                sourceNode = audioContext.createBufferSource();
-                sourceNode.buffer = audioBuffer;
-                
-                // ★★★ マスト要件：ピッチ（音程）を変えずに再生速度を変更 ★★★
-                sourceNode.playbackRate.value = playbackRate; 
-                // ★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★
-
-                sourceNode.connect(audioContext.destination);
-                
-                // 再生終了時の処理
-                sourceNode.onended = () => {
-                    if (isPlaying) { // 正常終了した場合のみ
-                        stopPlayback(false); // false = 完全停止（オフセットリセット）
-                    }
-                };
-                
-                // 再生開始
-                // (開始時間, 開始オフセット[秒])
-                sourceNode.start(0, startOffset % audioBuffer.duration);
-                
-                startTime = audioContext.currentTime;
-                isPlaying = true;
-                updatePlayButtonUI(true);
-                updateSeeker(); // Start the seeker update loop
-            }
-
-            function stopPlayback(isPause = false) {
-                if (animationFrameId) {
-                    cancelAnimationFrame(animationFrameId);
-                    animationFrameId = null;
-                }
-                if (sourceNode) {
-                    sourceNode.onended = null; // onendedイベントを無効化
-                    sourceNode.stop();
-                    sourceNode.disconnect();
-                    sourceNode = null;
-                }
-                
-                if (isPause) {
-                    // 一時停止の場合：現在の再生位置を計算して保存
-                    // (現在の時刻 - 再生開始時刻) * 再生速度 + 前回のオフセット
-                    const elapsedTime = (audioContext.currentTime - startTime) * playbackRate;
-                    startOffset += elapsedTime;
-                } else {
-                    // 完全停止（再生終了）の場合：オフセットをリセット
-                    startOffset = 0;
-                }
-
-                isPlaying = false;
-                updatePlayButtonUI(false); // UIを「再生」に
-            }
+            // オーディオイベントリスナー
+            audioPlayer.addEventListener('play', () => updatePlayButtonUI(true));
+            audioPlayer.addEventListener('pause', () => updatePlayButtonUI(false));
+            audioPlayer.addEventListener('ended', () => {
+                updatePlayButtonUI(false);
+                seekSlider.value = 0;
+                currentTimeDisplay.textContent = formatTime(0);
+            });
 
             function updatePlayButtonUI(playing) {
                 if (playing) {
@@ -308,109 +221,43 @@
             // 3. 速度変更スライダー
             // ---
             speedSlider.addEventListener('input', (e) => {
-                playbackRate = parseFloat(e.target.value);
-                speedDisplay.textContent = `× ${playbackRate.toFixed(2)}`;
-                updateBpmDisplay();
+                currentPlaybackRate = parseFloat(e.target.value);
+                speedDisplay.textContent = `× ${currentPlaybackRate.toFixed(2)}`;
                 
-                if (isPlaying && sourceNode) {
-                    // To keep the playback smooth, we adjust the start time
-                    const previousPlaybackRate = sourceNode.playbackRate.value;
-                    const elapsedTime = (audioContext.currentTime - startTime) * previousPlaybackRate;
-                    startOffset += elapsedTime;
-                    startTime = audioContext.currentTime; // Reset startTime for new rate
-                    sourceNode.playbackRate.value = playbackRate;
+                if (audioPlayer.src) {
+                    audioPlayer.playbackRate = currentPlaybackRate;
                 }
             });
 
             // ---
-            // 4. BPM Analysis
-            // ---
-            function updateBpmDisplay() {
-                if (detectedBpm) {
-                    const currentBpm = detectedBpm * playbackRate;
-                    bpmDisplay.textContent = `BPM: ${currentBpm.toFixed(1)}`;
-                } else {
-                    bpmDisplay.textContent = 'BPM: --';
-                }
-            }
-
-            async function analyzeBpm(audioBuffer) {
-                try {
-                    // To speed up analysis, only use a 30-second chunk from 25% into the track
-                    const duration = Math.min(30, audioBuffer.duration * 0.5);
-                    const offset = audioBuffer.duration * 0.25;
-
-                    const startSample = Math.floor(offset * audioBuffer.sampleRate);
-                    const endSample = Math.floor((offset + duration) * audioBuffer.sampleRate);
-                    const frameCount = endSample - startSample;
-
-                    // Create a new, smaller AudioBuffer containing only the segment we want to analyze
-                    const newAudioBuffer = audioContext.createBuffer(
-                        audioBuffer.numberOfChannels,
-                        frameCount,
-                        audioBuffer.sampleRate
-                    );
-
-                    for (let i = 0; i < audioBuffer.numberOfChannels; i++) {
-                        const channelData = audioBuffer.getChannelData(i);
-                        const chunkData = channelData.subarray(startSample, endSample);
-                        newAudioBuffer.copyToChannel(chunkData, i);
-                    }
-
-                    const tempo = await window.analyzeAudio(newAudioBuffer);
-                    return tempo;
-                } catch (err) {
-                    console.error('BPM analysis on audio chunk failed:', err);
-                    // Fallback to analyzing the whole buffer if the chunk fails
-                    try {
-                        const tempo = await window.analyzeAudio(audioBuffer);
-                        return tempo;
-                    } catch (innerErr) {
-                        console.error('Full BPM analysis also failed:', innerErr);
-                        return null;
-                    }
-                }
-            }
-
-            // ---
-            // 5. Seek Bar Logic
+            // 4. Seek Bar Logic
             // ---
             seekSlider.addEventListener('input', (e) => {
                 const newTime = parseFloat(e.target.value);
-                startOffset = newTime;
                 currentTimeDisplay.textContent = formatTime(newTime);
-                if (isPlaying) {
-                    stopPlayback(true);
-                    startPlayback();
+                if (audioPlayer.src) {
+                    audioPlayer.currentTime = newTime;
                 }
             });
 
-            function updateSeeker() {
-                if (isPlaying && audioBuffer) {
-                    const elapsedTime = (audioContext.currentTime - startTime) * playbackRate;
-                    const currentPlaybackTime = startOffset + elapsedTime;
-
-                    if (currentPlaybackTime < audioBuffer.duration) {
-                        seekSlider.value = currentPlaybackTime;
-                        currentTimeDisplay.textContent = formatTime(currentPlaybackTime);
-                    } else {
-                        // When playback finishes, reset slider and time
-                        seekSlider.value = 0;
-                        currentTimeDisplay.textContent = formatTime(0);
-                    }
+            audioPlayer.addEventListener('timeupdate', () => {
+                // スライダー操作中は更新しないほうが操作しやすい
+                if (document.activeElement !== seekSlider) {
+                    seekSlider.value = audioPlayer.currentTime;
+                    currentTimeDisplay.textContent = formatTime(audioPlayer.currentTime);
                 }
-                animationFrameId = requestAnimationFrame(updateSeeker);
-            }
+            });
 
             function formatTime(seconds) {
+                if (isNaN(seconds)) return "0:00";
                 const minutes = Math.floor(seconds / 60);
                 const secs = Math.floor(seconds % 60);
                 return `${minutes}:${secs.toString().padStart(2, '0')}`;
             }
 
             // 初期値の反映
-            speedSlider.value = playbackRate;
-            speedDisplay.textContent = `× ${playbackRate.toFixed(2)}`;
+            speedSlider.value = currentPlaybackRate;
+            speedDisplay.textContent = `× ${currentPlaybackRate.toFixed(2)}`;
         });
     </script>
 
