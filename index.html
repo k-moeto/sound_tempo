@@ -93,10 +93,10 @@
             <div class="flex flex-col gap-2 w-full">
                 <div class="flex items-center justify-between text-sm text-zinc-600 dark:text-zinc-400">
                     <span>× 0.25</span>
-                    <span class="text-lg font-semibold text-zinc-900 dark:text-zinc-100" id="speed-display">× 2.13</span>
+                    <span class="text-lg font-semibold text-zinc-900 dark:text-zinc-100" id="speed-display">× 1.00</span>
                     <span>× 4.0</span>
                 </div>
-                <input id="speed-slider" type="range" min="0.25" max="4" step="0.01" class="h-6 cursor-pointer outline-none border-none focus:accent-primary active:accent-primary w-full dark:bg-zinc-700" value="2.125"/>
+                <input id="speed-slider" type="range" min="-2" max="2" step="0.01" class="h-6 cursor-pointer outline-none border-none focus:accent-primary active:accent-primary w-full dark:bg-zinc-700" value="0"/>
             </div>
         </div>
         
@@ -109,7 +109,7 @@
             let audioContext;
             let audioBuffer = null; // デコードされた音声データ
             let sourceNode = null;  // 音声の再生ソース
-            let playbackRate = 2.125; // 現在の再生速度
+            let playbackRate = 1.0; // 現在の再生速度
             let isPlaying = false;
             let startTime = 0;      // 再生開始時刻（AudioContextの内部時間）
             let startOffset = 0;    // 再生開始オフセット（秒）
@@ -308,7 +308,9 @@
             // 3. 速度変更スライダー
             // ---
             speedSlider.addEventListener('input', (e) => {
-                playbackRate = parseFloat(e.target.value);
+                // Logarithmic scale: slider value is exponent of 2
+                // -2 -> 0.25, 0 -> 1.0, 2 -> 4.0
+                playbackRate = Math.pow(2, parseFloat(e.target.value));
                 speedDisplay.textContent = `× ${playbackRate.toFixed(2)}`;
                 updateBpmDisplay();
                 
@@ -409,7 +411,8 @@
             }
 
             // 初期値の反映
-            speedSlider.value = playbackRate;
+            // playbackRate = 1.0 -> log2(1.0) = 0
+            speedSlider.value = Math.log2(playbackRate);
             speedDisplay.textContent = `× ${playbackRate.toFixed(2)}`;
         });
     </script>
